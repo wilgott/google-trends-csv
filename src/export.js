@@ -1,0 +1,172 @@
+import { mkdirSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { chromium } from 'playwright';
+import { groupKeywords, groupSlug } from './keywords.js';
+import { buildExploreUrl } from './url.js';
+import { parseTrendsCsv, summarizeTrends } from './parse.js';
+
+const CONSENT_PATTERNS = [
+  'Accept all',
+  'I agree',
+  'Accept everything',
+  'Alle akzeptieren', // de
+  'Zustimmen',
+  'Tout accepter', // fr
+  'Aceptar todo', // es
+  'Accetta tutto', // it
+  'Godta alle', // no
+  'Acceptera alla', // sv
+  'Zaakceptuj wszystko', // pl
+  'Alles accepteren', // nl
+];
+
+const NO_DATA_PATTERNS = [
+  /not enough (search )?(volume|data)/i,
+  /doesn't have enough data/i,
+  /only shows data for some of your terms/i,
+];
+
+const CSV_BUTTON_SELECTOR = [
+  'widget-template[widget-name="fe_line_chart"] button[aria-label*="CSV" i]',
+  'widget-template[widget-name="fe_line_chart"] button[title*="CSV" i]',
+  'button[aria-label*="CSV" i]',
+].join(', ');
+
+/**
+ * Dismiss Google's cookie-consent interstitial if it is showing.
+ * Returns true if a consent button was clicked.
+ */
+async function dismissConsent(page) {
+  for (const label of CONSENT_PATTERNS) {
+    const button = page.locator(`button:has-text("${label}")`).first();
+    try {
+      if (await button.count() && await button.isVisible({ timeout: 1000 })) {
+        await button.click();
+        await page.waitForTimeout(2500);
+        return true;
+      }
+    } catch {
+      // consent button disappeared or is not clickable — keep trying other locales
+    }
+  }
+  return false;
+}
+
+/**
+ * True when the page reports that some/all terms have too little volume.
+ */
+async function detectPartialData(page) {
+  const text = await page.evaluate(() => document.body.innerText).catch(() => '');
+  return NO_DATA_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+/**
+ * Export Google Trends interest-over-time CSVs using a real Chrome session.
+ *
+ * @param {object} opts
+ * @param {string[] | string[][]} opts.keywords flat list (auto-chunked into
+ *   groups of 5) or array of pre-built groups (each max 5)
+ * @param {string} [opts.timeframe='today 12-m']
+ * @param {string} [opts.geo=''] two-letter region code, '' = worldwide
+ * @param {string} [opts.hl='en'] UI locale
+ * @param {boolean} [opts.headless=false] headed Chrome is the most reliable;
+ *   only use headless if your environment requires it
+ * @param {string} [opts.profileDir] persistent Chrome profile; reusing one
+ *   avoids repeat cookie consent and looks more like a returning user
+ * @param {string} [opts.outDir=process.cwd()] where CSVs are written
+ * @param {number} [opts.downloadTimeout=20000] ms to wait for the CSV download
+ * @param {function} [opts.onProgress] optional (message) => void logger
+ * @returns {Promise<{ csvPaths: string[], summary: object }>}
+ */
+export async function exportTrends({
+  keywords,
+  timeframe = 'today 12-m',
+  geo = '',
+  hl = 'en',
+  headless = false,
+  profileDir = join(tmpdir(), 'google-trends-csv-profile'),
+  outDir = process.cwd(),
+  downloadTimeout = 20000,
+  onProgress = () => {},
+} = {}) {
+  if (keywords === undefined) throw new Error('exportTrends: "keywords" is required');
+
+  const groups = groupKeywords(keywords);
+  const out = resolve(outDir);
+  mkdirSync(out, { recursive: true });
+
+  const context = await chromium.launchPersistentContext(profileDir, {
+    headless,
+    channel: 'chrome',
+    acceptDownloads: true,
+    viewport: { width: 1400, height: 900 },
+  });
+
+  const summary = {
+    timeframe,
+    geo,
+    hl,
+    generatedAt: new Date().toISOString(),
+    groups: [],
+  };
+  const csvPaths = [];
+
+  try {
+    const page = context.pages()[0] || (await context.newPage());
+    let consentHandled = false;
+
+    for (const group of groups) {
+      const url = buildExploreUrl({ keywords: group, timeframe, geo, hl });
+      onProgress(`Loading: ${group.join(', ')}`);
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.waitForTimeout(5000);
+
+      // Cookie consent appears once per profile; retry a couple of times since
+      // it can render late. Afterwards the profile remembers the choice.
+      if (!consentHandled) {
+        for (let attempt = 0; attempt < 3 && !consentHandled; attempt++) {
+          consentHandled = await dismissConsent(page);
+          if (!consentHandled) await page.waitForTimeout(2000);
+        }
+        consentHandled = true; // don't re-check on every group
+      }
+
+      const partial = await detectPartialData(page);
+      if (partial) {
+        onProgress(`Note: "not enough data" notice for group: ${group.join(', ')}`);
+      }
+
+      const button = page.locator(CSV_BUTTON_SELECTOR).first();
+      const entry = { keywords: group, csvPath: null, partial, stats: null, error: null };
+
+      if (!(await button.count())) {
+        entry.error = 'CSV download button not found (page layout changed or request was blocked)';
+      } else {
+        const [download] = await Promise.all([
+          page.waitForEvent('download', { timeout: downloadTimeout }).catch(() => null),
+          button.click(),
+        ]);
+
+        if (!download) {
+          entry.error = `CSV download did not start within ${downloadTimeout}ms — Google may be rate-limiting this session. Try again later, or delete the profile dir and retry headed.`;
+        } else {
+          const csvPath = join(out, `${groupSlug(group)}.csv`);
+          await download.saveAs(csvPath);
+          entry.csvPath = csvPath;
+          csvPaths.push(csvPath);
+
+          const parsed = parseTrendsCsv(readFileSync(csvPath, 'utf8'));
+          entry.stats = summarizeTrends(parsed);
+          onProgress(`Saved: ${csvPath}`);
+        }
+      }
+
+      summary.groups.push(entry);
+    }
+  } finally {
+    await context.close();
+  }
+
+  return { csvPaths, summary };
+}

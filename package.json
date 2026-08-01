@@ -1,0 +1,33 @@
+{
+  "name": "google-trends-csv",
+  "version": "0.1.0",
+  "description": "Google Trends CSV extractor that works when API wrappers get blocked. Drives a real Chrome session on trends.google.com and uses the site's own CSV export.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "bin": {
+    "gtrends-csv": "./bin/gtrends-csv.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test tests/"
+  },
+  "keywords": [
+    "google-trends",
+    "trends",
+    "csv",
+    "playwright",
+    "scraping",
+    "seo",
+    "market-research"
+  ],
+  "author": "Robin Wilgott",
+  "license": "MIT",
+  "dependencies": {
+    "playwright": "^1.49.0"
+  }
+}
