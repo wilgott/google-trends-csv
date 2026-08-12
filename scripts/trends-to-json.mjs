@@ -6,6 +6,7 @@
  * Usage: node scripts/trends-to-json.mjs --in ./trends-out --out dashboard/public/data
  *
  * Imports the repo's own tested CSV parser (src/parse.js) — no Playwright needed.
+ * Partial input is fine: converts whatever exported successfully.
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, resolve, basename, isAbsolute } from 'node:path';
@@ -75,6 +76,9 @@ writeFileSync(join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
 
 console.log(`Wrote ${terms.length} term files + manifest.json to ${outDir}`);
 if (missing.length) {
-  console.error(`MISSING keywords (not found in any CSV): ${missing.join(', ')}`);
+  console.warn(`Skipped ${missing.length} keyword(s) with no export this run: ${missing.join(', ')}`);
+}
+if (terms.length === 0) {
+  console.error('No terms converted at all — nothing to deploy.');
   process.exitCode = 1;
 }

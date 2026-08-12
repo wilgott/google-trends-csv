@@ -13,6 +13,9 @@
  * we fetch one keyword per page. Set TRENDS_FETCH_MODE=group to go back to
  * compare groups if Google restores them.
  *
+ * Exit code is always 0: partial success still deploys. summary.json records
+ * per-keyword failures; the weekly run fills gaps on the next attempt.
+ *
  * Usage: node scripts/fetch-trends.mjs [outDir]
  * Output: <outDir>/*.csv (one per keyword) + <outDir>/summary.json
  */
@@ -51,4 +54,6 @@ for (const g of summary.groups) {
   console.log(`  [${status}] ${g.keywords.join(', ')}`);
 }
 console.log(`Done. ${summary.groups.length - failures}/${summary.groups.length} pages exported to ${outDir}`);
-if (failures > 0) process.exitCode = 1;
+if (failures > 0) {
+  console.log(`${failures} keyword(s) failed — continuing with partial data; gaps retry on the next run.`);
+}
