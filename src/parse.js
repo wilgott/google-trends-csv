@@ -7,11 +7,30 @@
  *   row 3: header (Week,<keyword1>,<keyword2>,...)
  *   row 4+: data rows; values are 0-100 integers, or '<1' for sub-1% volume.
  *
- * Newer exports add a query description line (e.g.
- *   "diy kitchen renovation: (8/12/21 - 8/12/26, Worldwide)")
- * between the category row and the header, shifting the header down.
- * The header row is therefore located by its time column, not by position.
+ * Real-world variations handled here:
+ *   - a query description row ("kw: (range, geo)") before the header
+ *   - UTF-8 / UTF-16LE / UTF-16BE encodings (see decodeTrendsCsv)
+ *   - \n, \r\n and \r line endings
+ *   - a UTF-8 BOM at the start of the text
+ * The header row is located by its time column, not by position.
  */
+
+/**
+ * Decode a Trends CSV file buffer, handling UTF-8 (with or without BOM) and
+ * UTF-16 LE/BE (with BOM). Google's export encoding varies over time.
+ * @param {Buffer} buf raw file bytes
+ * @returns {string} decoded CSV text
+ */
+export function decodeTrendsCsv(buf) {
+  if (buf.length >= 2) {
+    if (buf[0] === 0xff && buf[1] === 0xfe) return new TextDecoder('utf-16le').decode(buf.subarray(2));
+    if (buf[0] === 0xfe && buf[1] === 0xff) return new TextDecoder('utf-16be').decode(buf.subarray(2));
+    if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
+      return new TextDecoder('utf-8').decode(buf.subarray(3));
+    }
+  }
+  return new TextDecoder('utf-8').decode(buf);
+}
 
 /** Split one CSV line into fields, honoring double-quoted fields. */
 export function splitCsvLine(line) {
@@ -60,12 +79,12 @@ const TIME_HEADER_RE = /^\s*"?(Week|Day|Month|Date|Time)"?\s*(,|$)/i;
  *   series: keyword -> array of 0-100 values, aligned with weeks
  */
 export function parseTrendsCsv(text) {
-  const lines = text.split(/\r?\n/);
+  const lines = text.replace(/^﻿/, '').split(/\r\n|\r|\n/);
 
   // The metadata block varies in length (category row, optional quoted
   // query/geo/range description row, blanks). Locate the header row by its
   // leading time column instead of assuming a fixed position.
-  const headerIdx = lines.findIndex((line, i) => i < 20 && TIME_HEADER_RE.test(line));
+  const headerIdx = lines.findIndex((line, i) => i < 40 && TIME_HEADER_RE.test(line));
 
   if (headerIdx === -1) {
     throw new Error('Not a Google Trends CSV: expected metadata rows plus a header row');

@@ -9,7 +9,7 @@
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, resolve, basename, isAbsolute } from 'node:path';
-import { parseTrendsCsv } from '../src/parse.js';
+import { parseTrendsCsv, decodeTrendsCsv } from '../src/parse.js';
 
 function arg(name, fallback) {
   const i = process.argv.indexOf(name);
@@ -30,11 +30,11 @@ function resolveCsv(p) {
   throw new Error(`CSV not found for path: ${p}`);
 }
 
-// Index every keyword across all group CSVs.
+// Index every keyword across all exported CSVs.
 const byKeyword = new Map(); // keyword -> { weeks, values, partial }
 for (const group of summary.groups) {
   if (group.error || !group.csvPath) continue;
-  const parsed = parseTrendsCsv(readFileSync(resolveCsv(group.csvPath), 'utf8'));
+  const parsed = parseTrendsCsv(decodeTrendsCsv(readFileSync(resolveCsv(group.csvPath))));
   for (const kw of parsed.header) {
     byKeyword.set(kw, { weeks: parsed.weeks, values: parsed.series[kw], partial: !!group.partial });
   }

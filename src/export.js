@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { chromium } from 'playwright';
 import { groupKeywords, groupSlug } from './keywords.js';
 import { buildExploreUrl } from './url.js';
-import { parseTrendsCsv, summarizeTrends } from './parse.js';
+import { parseTrendsCsv, summarizeTrends, decodeTrendsCsv } from './parse.js';
 
 const CONSENT_PATTERNS = [
   'Accept all',
@@ -263,7 +263,7 @@ export async function exportTrends({
           await download.saveAs(csvPath);
 
           try {
-            const parsed = parseTrendsCsv(readFileSync(csvPath, 'utf8'));
+            const parsed = parseTrendsCsv(decodeTrendsCsv(readFileSync(csvPath)));
             if (!/^\d{4}-\d{2}-\d{2}/.test(parsed.weeks[0] ?? '')) {
               throw new Error('file is not a dated time-series export');
             }
@@ -272,8 +272,10 @@ export async function exportTrends({
             entry.stats = summarizeTrends(parsed);
             onProgress(`Saved: ${csvPath}`);
           } catch (e) {
-            const head = readFileSync(csvPath, 'utf8').slice(0, 150).replace(/\s+/g, ' ').trim();
-            onProgress(`Export button ${bi + 1}/${buttonCount} returned unusable CSV (${e.message}). File starts: "${head}…"`);
+            const raw = readFileSync(csvPath);
+            const head = decodeTrendsCsv(raw).slice(0, 150).replace(/\s+/g, ' ').trim();
+            const hex = raw.subarray(0, 24).toString('hex');
+            onProgress(`Export button ${bi + 1}/${buttonCount} returned unusable CSV (${e.message}). File starts: "${head}…" [hex: ${hex}]`);
             renameSync(csvPath, join(out, `${groupSlug(group)}.widget${bi + 1}.csv`));
             entry.error = `CSV export was not the interest-over-time series: ${e.message}`;
           }
