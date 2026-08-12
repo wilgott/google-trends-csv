@@ -14,7 +14,7 @@
  * compare groups if Google restores them.
  *
  * Exit code is always 0: partial success still deploys. summary.json records
- * per-keyword failures; the weekly run fills gaps on the next attempt.
+ * per-keyword failures and is printed to the log for transparency.
  *
  * Usage: node scripts/fetch-trends.mjs [outDir]
  * Output: <outDir>/*.csv (one per keyword) + <outDir>/summary.json
@@ -45,15 +45,18 @@ const { summary } = await exportTrends({
   onProgress: (msg) => console.log(`  › ${msg}`),
 });
 
-writeFileSync(join(outDir, 'summary.json'), JSON.stringify(summary, null, 2));
+const summaryJson = JSON.stringify(summary, null, 2);
+writeFileSync(join(outDir, 'summary.json'), summaryJson);
 
 let failures = 0;
 for (const g of summary.groups) {
-  const status = g.error ? `ERROR: ${g.error}` : g.partial ? 'partial (low data)' : 'ok';
-  if (g.error) failures++;
+  const status = g.error && !g.csvPath ? `ERROR: ${g.error}` : g.partial ? 'partial (low data)' : 'ok';
+  if (g.error && !g.csvPath) failures++;
   console.log(`  [${status}] ${g.keywords.join(', ')}`);
 }
 console.log(`Done. ${summary.groups.length - failures}/${summary.groups.length} pages exported to ${outDir}`);
 if (failures > 0) {
   console.log(`${failures} keyword(s) failed — continuing with partial data; gaps retry on the next run.`);
 }
+console.log('summary.json:');
+console.log(summaryJson);

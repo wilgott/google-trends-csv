@@ -5,8 +5,8 @@
  *
  * Usage: node scripts/trends-to-json.mjs --in ./trends-out --out dashboard/public/data
  *
- * Imports the repo's own tested CSV parser (src/parse.js) — no Playwright needed.
- * Partial input is fine: converts whatever exported successfully.
+ * Trusts only csvPath + file existence — group.error records earlier failed
+ * attempts and does NOT disqualify an entry that ultimately exported.
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, resolve, basename, isAbsolute } from 'node:path';
@@ -28,14 +28,22 @@ const summary = JSON.parse(readFileSync(join(inDir, 'summary.json'), 'utf8'));
 function resolveCsv(p) {
   const candidates = isAbsolute(p) ? [p] : [resolve(p), join(inDir, p), join(inDir, basename(p))];
   for (const c of candidates) if (existsSync(c)) return c;
-  throw new Error(`CSV not found for path: ${p}`);
+  return null;
 }
 
 // Index every keyword across all exported CSVs.
 const byKeyword = new Map(); // keyword -> { weeks, values, partial }
 for (const group of summary.groups) {
-  if (group.error || !group.csvPath) continue;
-  const parsed = parseTrendsCsv(decodeTrendsCsv(readFileSync(resolveCsv(group.csvPath))));
+  if (!group.csvPath) {
+    console.log(`  skip ${group.keywords.join(', ')}: no csvPath (${group.error ? group.error.slice(0, 80) : 'no error recorded'})`);
+    continue;
+  }
+  const file = resolveCsv(group.csvPath);
+  if (!file) {
+    console.log(`  skip ${group.keywords.join(', ')}: file missing on disk: ${group.csvPath}`);
+    continue;
+  }
+  const parsed = parseTrendsCsv(decodeTrendsCsv(readFileSync(file)));
   for (const kw of parsed.header) {
     byKeyword.set(kw, { weeks: parsed.weeks, values: parsed.series[kw], partial: !!group.partial });
   }
