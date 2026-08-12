@@ -32,6 +32,16 @@ test('handles quoted header fields containing commas', () => {
   assert.deepEqual(series['split test'], [100, 98]);
 });
 
+test('parses new export format with query description row before header', () => {
+  const text = readFileSync(join(fixtures, 'new-format.csv'), 'utf8');
+  const { header, weeks, series } = parseTrendsCsv(text);
+
+  assert.deepEqual(header, ['diy kitchen renovation']);
+  assert.equal(weeks.length, 3);
+  assert.equal(weeks[0], '2021-08-08 - 2021-08-14');
+  assert.deepEqual(series['diy kitchen renovation'], [55, 52, 0]);
+});
+
 test('splitCsvLine handles escaped quotes', () => {
   assert.deepEqual(splitCsvLine('a,"say ""hi""",c'), ['a', 'say "hi"', 'c']);
 });

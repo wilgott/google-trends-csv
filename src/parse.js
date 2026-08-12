@@ -1,11 +1,16 @@
 /**
  * Parse a Google Trends "interest over time" CSV export.
  *
- * The export format is:
+ * Classic export format:
  *   row 1: metadata (e.g. "Category: All categories")
  *   row 2: blank
  *   row 3: header (Week,<keyword1>,<keyword2>,...)
  *   row 4+: data rows; values are 0-100 integers, or '<1' for sub-1% volume.
+ *
+ * Newer exports add a query description line (e.g.
+ *   "diy kitchen renovation: (8/12/21 - 8/12/26, Worldwide)")
+ * between the category row and the header, shifting the header down.
+ * The header row is therefore located by its time column, not by position.
  */
 
 /** Split one CSV line into fields, honoring double-quoted fields. */
@@ -44,6 +49,9 @@ function toValue(raw) {
   return n;
 }
 
+/** Matches the first column of a Trends time-series header row. */
+const TIME_HEADER_RE = /^\s*"?(Week|Day|Month|Date|Time)"?\s*(,|$)/i;
+
 /**
  * @param {string} text raw CSV file contents
  * @returns {{ header: string[], weeks: string[], series: Record<string, number[]> }}
@@ -52,16 +60,18 @@ function toValue(raw) {
  *   series: keyword -> array of 0-100 values, aligned with weeks
  */
 export function parseTrendsCsv(text) {
-  // Keep blank lines in place: the header is defined by position (row 3),
-  // and row 2 is blank in the real export format.
   const lines = text.split(/\r?\n/);
 
-  // Header is on row 3 (index 2): rows 1-2 are metadata.
-  if (lines.length < 3 || lines[2].trim() === '') {
+  // The metadata block varies in length (category row, optional quoted
+  // query/geo/range description row, blanks). Locate the header row by its
+  // leading time column instead of assuming a fixed position.
+  const headerIdx = lines.findIndex((line, i) => i < 20 && TIME_HEADER_RE.test(line));
+
+  if (headerIdx === -1) {
     throw new Error('Not a Google Trends CSV: expected metadata rows plus a header row');
   }
 
-  const headerFields = splitCsvLine(lines[2]);
+  const headerFields = splitCsvLine(lines[headerIdx]);
   if (headerFields.length < 2) {
     throw new Error('Not a Google Trends CSV: header row has no keyword columns');
   }
@@ -70,7 +80,7 @@ export function parseTrendsCsv(text) {
   const weeks = [];
   const values = header.map(() => []);
 
-  for (const row of lines.slice(3)) {
+  for (const row of lines.slice(headerIdx + 1)) {
     if (row.trim() === '') continue;
     const fields = splitCsvLine(row);
     if (fields.length < 2) continue;
