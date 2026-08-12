@@ -1,0 +1,46 @@
+name: update-trends
+
+on:
+  schedule:
+    - cron: "23 5 * * 1" # Mondays 05:23 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: trends
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Cache Chrome profile
+        uses: actions/cache@v4
+        with:
+          path: .trends-profile
+          key: trends-profile-${{ github.run_number }}
+          restore-keys: trends-profile-
+      - name: Fetch Google Trends (real Chrome under Xvfb)
+        run: xvfb-run -a node scripts/fetch-trends.mjs ./trends-out
+      - name: Convert CSV exports to dashboard JSON
+        run: node scripts/trends-to-json.mjs --in ./trends-out --out dashboard/public/data
+      - name: Commit updated data
+        run: |
+          git config user.name "trends-bot"
+          git config user.email "trends-bot@users.noreply.github.com"
+          git add dashboard/public/data
+          if git diff --cached --quiet; then
+            echo "No data changes — skipping commit"
+          else
+            git commit -m "data: weekly trends refresh ($(date -u +%Y-%m-%d))"
+            git push
+          fi
