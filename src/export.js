@@ -43,6 +43,24 @@ const RESTART_EVERY = 10; // rotate browser session after this many pages
 const MAX_CONSEC_FAILURES = 2; // rotate early on a failure streak
 
 /**
+ * Stealth patches: hide the automation tells Google checks for.
+ * Runs in every page before any script.
+ */
+const STEALTH_INIT = () => {
+  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  window.chrome = window.chrome || { runtime: {} };
+  Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+  Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+  const originalQuery = window.navigator.permissions?.query?.bind(window.navigator.permissions);
+  if (originalQuery) {
+    window.navigator.permissions.query = (params) =>
+      params.name === 'notifications'
+        ? Promise.resolve({ state: Notification.permission })
+        : originalQuery(params);
+  }
+};
+
+/**
  * Dismiss Google's cookie-consent interstitial if it is showing.
  * Returns true if a consent button was clicked.
  */
@@ -153,7 +171,9 @@ async function describeBlockPage(page, debugBase) {
  * @param {boolean} [opts.headless=false] headed Chrome is the most reliable;
  *   only use headless if your environment requires it
  * @param {string} [opts.profileDir] persistent Chrome profile; reusing one
- *   avoids repeat cookie consent and looks more like a returning user
+ *   avoids repeat cookie consent and looks more like a returning user.
+ *   Point it at a COPY of your real Chrome profile to inherit its cookies,
+ *   consent state and browsing trust — the strongest anti-blocking lever.
  * @param {string} [opts.outDir=process.cwd()] where CSVs are written
  * @param {number} [opts.downloadTimeout=20000] ms to wait for the CSV download
  * @param {function} [opts.onProgress] optional (message) => void logger
@@ -186,14 +206,20 @@ export async function exportTrends({
   const csvPaths = [];
 
   let sessionCycle = 0;
-  const launchContext = () =>
-    chromium.launchPersistentContext(sessionCycle === 0 ? profileDir : `${profileDir}-c${sessionCycle}`, {
-      headless,
-      channel: 'chrome',
-      acceptDownloads: true,
-      viewport: { width: 1400, height: 900 },
-      args: ['--disable-blink-features=AutomationControlled'],
-    });
+  const launchContext = async () => {
+    const ctx = await chromium.launchPersistentContext(
+      sessionCycle === 0 ? profileDir : `${profileDir}-c${sessionCycle}`,
+      {
+        headless,
+        channel: 'chrome',
+        acceptDownloads: true,
+        viewport: { width: 1400, height: 900 },
+        args: ['--disable-blink-features=AutomationControlled'],
+      }
+    );
+    await ctx.addInitScript(STEALTH_INIT);
+    return ctx;
+  };
 
   let context = await launchContext();
   let page = context.pages()[0] || (await context.newPage());
