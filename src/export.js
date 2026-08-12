@@ -36,9 +36,11 @@ const CSV_BUTTON_SELECTOR = [
 ].join(', ');
 
 const MAX_429_RETRIES = 3;
-const GROUP_DELAY_MS = 4000; // polite pacing between groups
+const GROUP_DELAY_MS = 4000; // base pacing; jittered per page (4–8s)
 const MAX_BUTTON_ATTEMPTS = 4; // export buttons to try per page load, in DOM order
 const MAX_PAGE_LOADS = 2; // page loads per keyword (widget failures are transient)
+const RESTART_EVERY = 10; // rotate browser session after this many pages
+const MAX_CONSEC_FAILURES = 2; // rotate early on a failure streak
 
 /**
  * Dismiss Google's cookie-consent interstitial if it is showing.
@@ -77,7 +79,6 @@ async function detectPartialData(page) {
 /**
  * Inspect the rendered DOM and report what is actually on the page:
  * which widgets rendered, which buttons exist, and any error notices.
- * Printed to the run log so failures are diagnosable without artifacts.
  */
 async function pageAutopsy(page) {
   try {
@@ -138,6 +139,11 @@ async function describeBlockPage(page, debugBase) {
 /**
  * Export Google Trends interest-over-time CSVs using a real Chrome session.
  *
+ * Google throttles automated sessions after ~15–20 page loads: the first
+ * keywords succeed, then every page fails. To stay under the radar the
+ * browser session is rotated every RESTART_EVERY pages (fresh profile, new
+ * cookies) and after MAX_CONSEC_FAILURES consecutive failures.
+ *
  * @param {object} opts
  * @param {string[] | string[][]} opts.keywords flat list (auto-chunked into
  *   groups of 5) or array of pre-built groups (each max 5)
@@ -170,14 +176,6 @@ export async function exportTrends({
   const out = resolve(outDir);
   mkdirSync(out, { recursive: true });
 
-  const context = await chromium.launchPersistentContext(profileDir, {
-    headless,
-    channel: 'chrome',
-    acceptDownloads: true,
-    viewport: { width: 1400, height: 900 },
-    args: ['--disable-blink-features=AutomationControlled'],
-  });
-
   const summary = {
     timeframe,
     geo,
@@ -187,19 +185,57 @@ export async function exportTrends({
   };
   const csvPaths = [];
 
+  let sessionCycle = 0;
+  const launchContext = () =>
+    chromium.launchPersistentContext(sessionCycle === 0 ? profileDir : `${profileDir}-c${sessionCycle}`, {
+      headless,
+      channel: 'chrome',
+      acceptDownloads: true,
+      viewport: { width: 1400, height: 900 },
+      args: ['--disable-blink-features=AutomationControlled'],
+    });
+
+  let context = await launchContext();
+  let page = context.pages()[0] || (await context.newPage());
+  let consentHandled = false;
+  let warmedUp = false;
+  let sinceLaunch = 0;
+  let consecutiveFailures = 0;
+
+  const rotateSession = async (reason) => {
+    onProgress(`Rotating browser session (${reason})`);
+    await context.close().catch(() => {});
+    sessionCycle++;
+    context = await launchContext();
+    page = context.pages()[0] || (await context.newPage());
+    consentHandled = false;
+    warmedUp = false;
+    sinceLaunch = 0;
+    consecutiveFailures = 0;
+  };
+
   try {
-    const page = context.pages()[0] || (await context.newPage());
-    let consentHandled = false;
-
-    // Warm the session on a neutral Google page before hitting Trends.
-    onProgress('Warming up session');
-    await page.goto('https://www.google.com', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-    await page.waitForTimeout(2500);
-
     let groupIndex = -1;
     for (const group of groups) {
       groupIndex++;
-      if (groupIndex > 0) await page.waitForTimeout(GROUP_DELAY_MS);
+
+      // Rotate before this session gets flagged.
+      if (sinceLaunch >= RESTART_EVERY || consecutiveFailures >= MAX_CONSEC_FAILURES) {
+        await rotateSession(
+          sinceLaunch >= RESTART_EVERY ? `fresh profile after ${sinceLaunch} pages` : `${consecutiveFailures} consecutive failures`
+        );
+      }
+
+      // Warm each fresh session on a neutral Google page first.
+      if (!warmedUp) {
+        onProgress('Warming up session');
+        await page.goto('https://www.google.com', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+        await page.waitForTimeout(2500);
+        warmedUp = true;
+      } else if (groupIndex > 0) {
+        // Jittered pacing — metronome timing is a bot signature.
+        await page.waitForTimeout(GROUP_DELAY_MS + Math.floor(Math.random() * GROUP_DELAY_MS));
+      }
 
       const url = buildExploreUrl({ keywords: group, timeframe, geo, hl });
       onProgress(`Loading: ${group.join(', ')}`);
@@ -208,8 +244,6 @@ export async function exportTrends({
 
       for (let loadAttempt = 0; loadAttempt < MAX_PAGE_LOADS && !entry.csvPath; loadAttempt++) {
         if (loadAttempt === 0) {
-          // Navigate with 429 backoff — a 429 page means Google is throttling
-          // this IP/session, so wait progressively longer before giving up.
           for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt++) {
             const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
             await page.waitForTimeout(5000);
@@ -224,17 +258,13 @@ export async function exportTrends({
             }
           }
         } else {
-          // Widgets fail to render transiently from flagged IPs — a plain
-          // reload often brings the timeline widget back.
           onProgress(`No timeline export on first render — reloading page (attempt ${loadAttempt + 1}/${MAX_PAGE_LOADS})`);
           await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
           await page.waitForTimeout(6000);
         }
 
-        // Widgets render lazily — give the page a chance to settle.
         await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
 
-        // Cookie consent appears once per profile; afterwards it is remembered.
         if (!consentHandled) {
           for (let attempt = 0; attempt < 3 && !consentHandled; attempt++) {
             consentHandled = await dismissConsent(page);
@@ -302,6 +332,8 @@ export async function exportTrends({
         if (!entry.error) entry.error = 'No usable CSV export found on the page.';
       }
 
+      sinceLaunch++;
+      consecutiveFailures = entry.csvPath ? 0 : consecutiveFailures + 1;
       summary.groups.push(entry);
     }
   } finally {
