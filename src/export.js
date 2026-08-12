@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { chromium } from 'playwright';
@@ -62,6 +62,26 @@ async function detectPartialData(page) {
 }
 
 /**
+ * Diagnose why the CSV button is missing: label the likely cause from the
+ * URL/title, and capture a screenshot + HTML dump for later inspection.
+ */
+async function describeBlockPage(page, debugBase) {
+  const url = page.url();
+  const title = await page.title().catch(() => '');
+  try {
+    await page.screenshot({ path: `${debugBase}.png`, fullPage: true });
+    writeFileSync(`${debugBase}.html`, await page.content());
+  } catch {
+    // best effort only
+  }
+  let cause = 'page layout changed';
+  if (url.includes('consent.google')) cause = 'cookie-consent wall not dismissed';
+  else if (url.includes('/sorry/')) cause = 'Google rate-limit/captcha page (datacenter IP blocked)';
+  else if (/before you continue/i.test(title)) cause = 'cookie-consent wall not dismissed';
+  return `CSV download button not found — ${cause} (url: ${url}, title: "${title}"). Debug saved to ${debugBase}.{png,html}`;
+}
+
+/**
  * Export Google Trends interest-over-time CSVs using a real Chrome session.
  *
  * @param {object} opts
@@ -121,6 +141,8 @@ export async function exportTrends({
       onProgress(`Loading: ${group.join(', ')}`);
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
       await page.waitForTimeout(5000);
+      // Widgets render lazily — give the page a chance to settle on slow networks.
+      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
 
       // Cookie consent appears once per profile; retry a couple of times since
       // it can render late. Afterwards the profile remembers the choice.
@@ -138,10 +160,13 @@ export async function exportTrends({
       }
 
       const button = page.locator(CSV_BUTTON_SELECTOR).first();
+      // The chart widget can take a while to render — poll for the button
+      // before concluding it is missing.
+      await button.waitFor({ state: 'visible', timeout: 20000 }).catch(() => {});
       const entry = { keywords: group, csvPath: null, partial, stats: null, error: null };
 
       if (!(await button.count())) {
-        entry.error = 'CSV download button not found (page layout changed or request was blocked)';
+        entry.error = await describeBlockPage(page, join(out, `debug-${groupSlug(group)}`));
       } else {
         const [download] = await Promise.all([
           page.waitForEvent('download', { timeout: downloadTimeout }).catch(() => null),
