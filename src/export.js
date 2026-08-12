@@ -306,6 +306,7 @@ export async function exportTrends({
               throw new Error('file is not a dated time-series export');
             }
             entry.csvPath = csvPath;
+            entry.error = null; // success — discard errors from earlier failed attempts
             csvPaths.push(csvPath);
             entry.stats = summarizeTrends(parsed);
             onProgress(`Saved: ${csvPath}`);
