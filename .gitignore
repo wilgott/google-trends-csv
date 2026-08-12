@@ -1,4 +1,5 @@
 node_modules/
 trends/
+trends-out/
 *-profile/
 .DS_Store
