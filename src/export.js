@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { chromium } from 'playwright';
@@ -14,7 +14,7 @@ const CONSENT_PATTERNS = [
   'Zustimmen',
   'Tout accepter', // fr
   'Aceptar todo', // es
-  'Accetta tutto', // it
+  'Accetta todo', // it
   'Godta alle', // no
   'Acceptera alla', // sv
   'Zaakceptuj wszystko', // pl
@@ -32,11 +32,12 @@ const CSV_BUTTON_SELECTOR = [
   'widget-template[widget-name="fe_line_chart"] button[title*="CSV" i]',
   'widget-template[widget-name="fe_line_chart"] button.export',
   'button[aria-label*="CSV" i]',
-  'button.export', // first export button on the page = interest-over-time widget
+  'button.export',
 ].join(', ');
 
 const MAX_429_RETRIES = 3;
 const GROUP_DELAY_MS = 4000; // polite pacing between groups
+const MAX_BUTTON_ATTEMPTS = 5; // export buttons to try, in DOM order
 
 /**
  * Dismiss Google's cookie-consent interstitial if it is showing.
@@ -158,13 +159,12 @@ export async function exportTrends({
 
       // Navigate with 429 backoff — a 429 page means Google is throttling this
       // IP/session, so wait progressively longer and retry before giving up.
-      let throttled = false;
       for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt++) {
         const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
         await page.waitForTimeout(5000);
         const status = response ? response.status() : 0;
         const title = await page.title().catch(() => '');
-        throttled = status === 429 || /429/.test(title);
+        const throttled = status === 429 || /429/.test(title);
         if (!throttled) break;
         if (attempt < MAX_429_RETRIES) {
           const waitMs = 20000 * (attempt + 1) + 10000;
@@ -191,31 +191,50 @@ export async function exportTrends({
         onProgress(`Note: "not enough data" notice for group: ${group.join(', ')}`);
       }
 
-      const button = page.locator(CSV_BUTTON_SELECTOR).first();
-      // The chart widget can take a while to render — poll for the button
-      // before concluding it is missing.
-      await button.waitFor({ state: 'visible', timeout: 20000 }).catch(() => {});
+      const buttons = page.locator(CSV_BUTTON_SELECTOR);
+      await buttons.first().waitFor({ state: 'visible', timeout: 20000 }).catch(() => {});
+      const buttonCount = await buttons.count();
       const entry = { keywords: group, csvPath: null, partial, stats: null, error: null };
 
-      if (!(await button.count())) {
+      if (!buttonCount) {
         entry.error = await describeBlockPage(page, join(out, `debug-${groupSlug(group)}`));
       } else {
-        const [download] = await Promise.all([
-          page.waitForEvent('download', { timeout: downloadTimeout }).catch(() => null),
-          button.click(),
-        ]);
+        // The explore page hosts several exportable widgets (timeline, regions,
+        // related queries — the latter export percentages). Try export buttons
+        // in DOM order and keep the first download that parses as a dated
+        // weekly time series.
+        for (let bi = 0; bi < Math.min(buttonCount, MAX_BUTTON_ATTEMPTS) && !entry.csvPath; bi++) {
+          const [download] = await Promise.all([
+            page.waitForEvent('download', { timeout: downloadTimeout }).catch(() => null),
+            buttons.nth(bi).click(),
+          ]);
 
-        if (!download) {
-          entry.error = `CSV download did not start within ${downloadTimeout}ms — Google may be rate-limiting this session. Try again later, or delete the profile dir and retry headed.`;
-        } else {
+          if (!download) {
+            entry.error = `CSV download did not start within ${downloadTimeout}ms — Google may be rate-limiting this session. Try again later, or delete the profile dir and retry headed.`;
+            continue;
+          }
+
           const csvPath = join(out, `${groupSlug(group)}.csv`);
           await download.saveAs(csvPath);
-          entry.csvPath = csvPath;
-          csvPaths.push(csvPath);
 
-          const parsed = parseTrendsCsv(readFileSync(csvPath, 'utf8'));
-          entry.stats = summarizeTrends(parsed);
-          onProgress(`Saved: ${csvPath}`);
+          try {
+            const parsed = parseTrendsCsv(readFileSync(csvPath, 'utf8'));
+            if (!/^\d{4}-\d{2}-\d{2}/.test(parsed.weeks[0] ?? '')) {
+              throw new Error('file is not a dated time-series export');
+            }
+            entry.csvPath = csvPath;
+            csvPaths.push(csvPath);
+            entry.stats = summarizeTrends(parsed);
+            onProgress(`Saved: ${csvPath}`);
+          } catch (e) {
+            const head = readFileSync(csvPath, 'utf8').slice(0, 150).replace(/\s+/g, ' ').trim();
+            onProgress(`Export button ${bi + 1}/${buttonCount} returned unusable CSV (${e.message}). File starts: "${head}…"`);
+            renameSync(csvPath, join(out, `${groupSlug(group)}.widget${bi + 1}.csv`));
+            entry.error = `CSV export was not the interest-over-time series: ${e.message}`;
+          }
+        }
+        if (!entry.csvPath && !entry.error) {
+          entry.error = 'No usable CSV export found on the page.';
         }
       }
 
