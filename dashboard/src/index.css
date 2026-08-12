@@ -139,6 +139,38 @@ body {
   padding: 4px 8px;
   text-transform: uppercase;
 }
+.badge-live {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  background: var(--fg);
+  color: var(--bg);
+  padding: 4px 8px;
+  text-transform: uppercase;
+}
+
+.loading {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--fg);
+}
+
+.pattern-title {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
 
 .invert-btn {
   font-family: 'JetBrains Mono', ui-monospace, monospace;

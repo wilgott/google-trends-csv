@@ -1,23 +1,45 @@
 # TrendSignal — Search-Trends Indicator Dashboard
 
-A monochrome, analyst-style dashboard that turns Google Trends–style search
-interest into research signals. Built to pair with the
-[`google-trends-csv`](../) data tool in this repo.
+A monochrome, analyst-style dashboard that turns Google Trends search interest
+into research signals. Powered by the [`google-trends-csv`](../) extractor in
+this repo.
 
-**All data currently shipped in the dashboard is simulated** (deterministic,
-seeded synthetic series in `src/lib/data.ts`). The indicator engine is real —
-swap the synthetic series for actual CSV output from `google-trends-csv` to go
-live.
+## How it gets data
+
+```
+GitHub Action (weekly cron / manual dispatch)
+  → real Chrome on trends.google.com (google-trends-csv)
+  → CSV per keyword group
+  → scripts/trends-to-json.mjs
+  → dashboard/public/data/*.json + manifest.json  (committed to main)
+  → Cloudflare Pages rebuild
+  → dashboard fetches /data/manifest.json at runtime
+```
+
+- **Pipeline config:** [`trends.config.json`](../trends.config.json) — keyword
+  groups (fixed across runs to keep normalization comparable), timeframe,
+  geo, and per-term display metadata. Edit it to track your own themes.
+- **Workflow:** [`.github/workflows/update-trends.yml`](../.github/workflows/update-trends.yml).
+  Runs Mondays 05:23 UTC; trigger manually anytime via
+  **Actions → update-trends → Run workflow**.
+- **Fallback:** if no live data has been published yet, the dashboard renders a
+  clearly-labeled **simulated** demo universe so the UI is never empty.
+  The header badge shows **LIVE** or **SIMULATED** accordingly.
 
 ## What it shows
 
-- **Watchlist** — tracked search queries with 5-year sparklines, current index,
-  YoY change, 5-year percentile and a composite signal (BULLISH / NEUTRAL / BEARISH)
+- **Watchlist** — tracked queries with 5-year sparklines, current index, YoY,
+  percentile and a composite signal (BULLISH / NEUTRAL / BEARISH)
 - **Main chart** — 5Y/1Y search-interest index with a seasonal expectation band
   (week-of-year climatology ±1σ) and crosshair inspection
 - **Indicator breakdown** — sub-indicator meters (YoY momentum, 13-week
-  rate-of-change, percentile, seasonal surprise z-score), composite score,
-  desk note and invalidation criteria per term
+  rate-of-change, percentile, seasonal surprise z-score), composite score
+- **Pattern Read · Auto** — a rule-based interpreter (`src/lib/interpret.ts`)
+  classifies each term into a named pattern (event-driven spike, structural
+  uptrend, late-cycle plateau, persistent decline, early inflection, seasonal
+  norm) and generates a desk note + invalidation condition. Deterministic:
+  same metrics → same read. Curated analyst notes can be layered on top via
+  `note`/`risk` in the config.
 
 ### Signal construction
 
@@ -44,6 +66,9 @@ npm install
 npm run dev
 ```
 
+To test live-data mode locally, drop a `manifest.json` + term files into
+`public/data/` (shape documented in `scripts/trends-to-json.mjs`).
+
 ## Deploy to Cloudflare Pages
 
 This app lives in the `dashboard/` subdirectory of the repo.
@@ -57,21 +82,11 @@ This app lives in the `dashboard/` subdirectory of the repo.
    - **Build output directory:** `dist`
 3. Add environment variable `NODE_VERSION = ` `22` (Vite 7 requires Node ≥ 20.19;
    the included `.nvmrc` also pins 22).
-4. Deploy. Every push to `main` that touches `dashboard/` rebuilds automatically.
+4. Deploy. Every push to `main` — including the weekly data commit — rebuilds
+   automatically.
 
 > Note: `package-lock.json` is intentionally not committed — Cloudflare runs a
 > fresh `npm install`.
-
-## Swap in real data
-
-The data layer is isolated in `src/lib/data.ts`:
-
-- `TermDef` describes a tracked query (label, sector, desk notes)
-- `buildTerm()` computes the seasonal band and all indicators from a weekly
-  0–100 series
-- Replace `genSeries()` output with parsed CSV rows from `google-trends-csv`
-  (or fetch them at runtime from a Pages Function / Worker) — the rest of the
-  UI needs no changes
 
 ## Disclaimer
 
