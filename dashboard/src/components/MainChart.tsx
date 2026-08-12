@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { TermData } from '../lib/data';
-import { WEEKS, fmtDate, fmtMonthYear, fmtYear, fmtIdx, fmtPct } from '../lib/data';
+import { fmtDate, fmtMonthYear, fmtYear, fmtIdx, fmtPct } from '../lib/data';
 
 interface Props {
   term: TermData;
@@ -30,9 +30,10 @@ export function MainChart({ term, range }: Props) {
   useEffect(() => setHover(null), [term.def.id, range]);
 
   const { w: W, h: H } = size;
-  const start = range === '1Y' ? WEEKS - 53 : 0;
+  const total = term.series.length;
+  const start = range === '1Y' ? Math.max(total - 53, 0) : 0;
   const idx: number[] = [];
-  for (let i = start; i < WEEKS; i++) idx.push(i);
+  for (let i = start; i < total; i++) idx.push(i);
   const n = idx.length;
 
   const plotW = Math.max(W - PADL - PADR, 10);
@@ -50,13 +51,14 @@ export function MainChart({ term, range }: Props) {
   // x-axis ticks
   const ticks: { i: number; label: string }[] = [];
   if (range === '5Y') {
-    [0, 52, 104, 156, 208, 260].filter((i) => i >= start).forEach((i) => ticks.push({ i, label: fmtYear(i) }));
+    const marks = [0, 0.2, 0.4, 0.6, 0.8, 1].map((f) => Math.round(f * (total - 1)));
+    [...new Set(marks)].filter((i) => i >= start).forEach((i) => ticks.push({ i, label: fmtYear(term, i) }));
   } else {
-    for (let i = start; i < WEEKS; i += 9) ticks.push({ i, label: fmtMonthYear(i) });
-    ticks.push({ i: WEEKS - 1, label: fmtMonthYear(WEEKS - 1) });
+    for (let i = start; i < total; i += 9) ticks.push({ i, label: fmtMonthYear(term, i) });
+    ticks.push({ i: total - 1, label: fmtMonthYear(term, total - 1) });
   }
 
-  const last = WEEKS - 1;
+  const last = total - 1;
   const hoverI = hover !== null ? idx[Math.min(Math.max(hover, 0), n - 1)] : null;
 
   const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
@@ -145,7 +147,7 @@ export function MainChart({ term, range }: Props) {
             top: `${(y(term.series[hoverI]) / H) * 100}%`,
           }}
         >
-          <div style={{ color: 'var(--muted)' }}>{fmtDate(hoverI)}</div>
+          <div style={{ color: 'var(--muted)' }}>{fmtDate(term, hoverI)}</div>
           <div><b>{fmtIdx(term.series[hoverI])}</b> INDEX</div>
           <div style={{ color: 'var(--muted)' }}>
             BAND {fmtIdx(term.bandLo[hoverI])}–{fmtIdx(term.bandHi[hoverI])}

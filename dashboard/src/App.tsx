@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { TERMS, fmtIdx, fmtPct, SIGNAL_CLASS, SIGNAL_TEXT } from './lib/data';
+import { fmtIdx, fmtPct, fmtDate, SIGNAL_CLASS, SIGNAL_TEXT } from './lib/data';
+import type { LoadResult } from './lib/loader';
+import { loadTerms } from './lib/loader';
 import { Ticker } from './components/Ticker';
 import { Watchlist } from './components/Watchlist';
 import { MainChart } from './components/MainChart';
@@ -16,10 +18,18 @@ function Logo() {
 }
 
 export default function App() {
+  const [data, setData] = useState<LoadResult | null>(null);
   const [selectedId, setSelectedId] = useState('roof');
   const [range, setRange] = useState<'1Y' | '5Y'>('5Y');
   const [inverted, setInverted] = useState(false);
   const [clock, setClock] = useState('');
+
+  useEffect(() => {
+    loadTerms().then((res) => {
+      setData(res);
+      if (!res.terms.some((t) => t.def.id === 'roof')) setSelectedId(res.terms[0]?.def.id ?? '');
+    });
+  }, []);
 
   useEffect(() => {
     document.documentElement.classList.toggle('invert', inverted);
@@ -36,15 +46,30 @@ export default function App() {
     return () => clearInterval(t);
   }, []);
 
-  const term = useMemo(() => TERMS.find((t) => t.def.id === selectedId) ?? TERMS[0], [selectedId]);
+  const terms = useMemo(() => data?.terms ?? [], [data]);
+  const term = useMemo(
+    () => terms.find((t) => t.def.id === selectedId) ?? terms[0],
+    [terms, selectedId]
+  );
   const counts = useMemo(
     () => ({
-      bull: TERMS.filter((t) => t.signal === 'BULL').length,
-      neut: TERMS.filter((t) => t.signal === 'NEUT').length,
-      bear: TERMS.filter((t) => t.signal === 'BEAR').length,
+      bull: terms.filter((t) => t.signal === 'BULL').length,
+      neut: terms.filter((t) => t.signal === 'NEUT').length,
+      bear: terms.filter((t) => t.signal === 'BEAR').length,
     }),
-    []
+    [terms]
   );
+
+  if (!data || !term) {
+    return (
+      <div className="loading">
+        <span className="live-dot" />
+        <span>LOADING TREND DATA…</span>
+      </div>
+    );
+  }
+
+  const updatedLabel = data.updatedAt ? data.updatedAt.slice(0, 10) : null;
 
   return (
     <div className="app">
@@ -59,9 +84,10 @@ export default function App() {
         </div>
         <div className="hdr-mid">
           <span className="live-dot" />
-          <span className="label" style={{ color: 'var(--fg)' }}>Monitoring {TERMS.length} search themes</span>
+          <span className="label" style={{ color: 'var(--fg)' }}>Monitoring {terms.length} search themes</span>
           <span className="label">·</span>
           <span className="label">{counts.bull} bullish / {counts.neut} neutral / {counts.bear} bearish</span>
+          {data.live && updatedLabel && <span className="label">· data as of {updatedLabel}</span>}
         </div>
         <div className="hdr-right">
           <div className="hdr-cell">
@@ -70,7 +96,7 @@ export default function App() {
           </div>
           <div className="hdr-cell">
             <span className="label">Data</span>
-            <span className="badge-sim">Simulated</span>
+            <span className={data.live ? 'badge-live' : 'badge-sim'}>{data.live ? 'Live' : 'Simulated'}</span>
           </div>
           <div className="hdr-cell" style={{ padding: '8px 14px' }}>
             <button className="invert-btn" style={{ height: '100%' }} onClick={() => setInverted(!inverted)}>
@@ -82,7 +108,7 @@ export default function App() {
       </header>
 
       {/* ===== Ticker ===== */}
-      <Ticker />
+      <Ticker terms={terms} />
 
       {/* ===== Board ===== */}
       <main className="board">
@@ -93,7 +119,7 @@ export default function App() {
             <span className="label">Weekly · 0–100</span>
           </div>
           <div className="pane-body" style={{ display: 'flex', flexDirection: 'column', padding: 0 }}>
-            <Watchlist terms={TERMS} selectedId={selectedId} onSelect={setSelectedId} />
+            <Watchlist terms={terms} selectedId={selectedId} onSelect={setSelectedId} />
           </div>
         </section>
 
@@ -142,7 +168,7 @@ export default function App() {
         <section className="col-detail">
           <div className="pane-head">
             <span className="label" style={{ color: 'var(--fg)', fontWeight: 800 }}>Indicator Breakdown</span>
-            <span className="label">{term.def.id.toUpperCase()}-W32</span>
+            <span className="label">AS OF {fmtDate(term, term.series.length - 1)}</span>
           </div>
           <DetailPanel term={term} />
         </section>
@@ -170,7 +196,9 @@ export default function App() {
           <p>
             Search interest ≠ revenue. Spikes can be event-driven, regional and transient, and one winner's anecdote is
             survivorship bias. Treat every signal as a screening question: <b>why is demand up, and is it already priced in?</b>{' '}
-            All data here is simulated for demonstration — not investment advice.
+            {data.live
+              ? 'Live Google Trends data, refreshed weekly by an automated job. Not investment advice.'
+              : 'All data here is simulated for demonstration — not investment advice.'}
           </p>
         </div>
       </footer>

@@ -1,5 +1,6 @@
 import type { TermData } from '../lib/data';
-import { fmtPct, fmtIdx, fmtScore, SIGNAL_TEXT, SIGNAL_GLYPH, SIGNAL_CLASS } from '../lib/data';
+import { fmtPct, fmtIdx, fmtScore, fmtDate, SIGNAL_TEXT, SIGNAL_GLYPH, SIGNAL_CLASS } from '../lib/data';
+import { interpret } from '../lib/interpret';
 
 function Meter({ label, value, display }: { label: string; value: number; display: string }) {
   const cells = 14;
@@ -21,6 +22,7 @@ export function DetailPanel({ term }: { term: TermData }) {
   const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
   const scoreCells = 24;
   const scoreOn = Math.round(term.score * scoreCells);
+  const read = interpret(term);
 
   return (
     <div className="pane-body">
@@ -35,7 +37,7 @@ export function DetailPanel({ term }: { term: TermData }) {
         </div>
         <div className="dt-sub">
           <span className="label">0 = no interest · 100 = peak</span>
-          <span className="label">W32 · 09 AUG 26</span>
+          <span className="label">As of {fmtDate(term, term.series.length - 1)}</span>
         </div>
       </div>
 
@@ -68,13 +70,26 @@ export function DetailPanel({ term }: { term: TermData }) {
         </div>
       </div>
 
-      {/* desk note */}
-      <div className="dt-block" style={{ borderBottom: 'none' }}>
+      {/* pattern read — auto-generated from indicators */}
+      <div className="dt-block">
         <div className="note-box">
-          <span className="label">Desk Note</span>
-          <div className="note-text">{term.def.note}</div>
+          <span className="label">Pattern Read · Auto</span>
+          <div className="pattern-title">{read.title}</div>
+          <div className="note-text">{read.note}</div>
           <span className="label">What Invalidates It</span>
-          <div className="note-text">{term.def.risk}</div>
+          <div className="note-text">{read.invalidates}</div>
+          {term.def.note && (
+            <>
+              <span className="label">Analyst Note{term.live ? ' · Curated' : ''}</span>
+              <div className="note-text">{term.def.note}</div>
+            </>
+          )}
+          {term.def.risk && (
+            <>
+              <span className="label">Analyst Risk{term.live ? ' · Curated' : ''}</span>
+              <div className="note-text">{term.def.risk}</div>
+            </>
+          )}
         </div>
       </div>
     </div>

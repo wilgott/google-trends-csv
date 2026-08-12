@@ -1,7 +1,8 @@
-import { TERMS, fmtPct, SIGNAL_TEXT, SIGNAL_GLYPH } from '../lib/data';
+import type { TermData } from '../lib/data';
+import { fmtPct, SIGNAL_TEXT, SIGNAL_GLYPH } from '../lib/data';
 
-export function Ticker() {
-  const items = TERMS.map(
+export function Ticker({ terms }: { terms: TermData[] }) {
+  const items = terms.map(
     (t) => `${t.def.label} ${fmtIdx2(t.now)} ${fmtPct(t.yoy)} YOY ${SIGNAL_GLYPH[t.signal]} ${SIGNAL_TEXT[t.signal]}`
   );
   const line = (prefix: string) =>
