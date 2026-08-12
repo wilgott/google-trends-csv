@@ -1,19 +1,27 @@
-/* TrendSignal — simulated search-interest dataset + indicator engine.
-   All series are synthetic: trend + seasonality + seeded noise + event shocks. */
+/* TrendSignal — indicator engine + data sources.
+   Engine works on ANY weekly 0–100 series (live Google Trends CSV or synthetic).
+   The synthetic set below is the fallback when no live data has been published yet. */
 
 export type Signal = 'BULL' | 'NEUT' | 'BEAR';
 
-export interface EventShock {
-  week: number; // absolute week index 0..260
-  height: number; // amplitude in index points (can be negative)
-  width: number; // gaussian sigma in weeks
-}
-
-export interface TermDef {
+/* ---------- metadata ---------- */
+export interface TermMeta {
   id: string;
   label: string; // display name
   query: string; // the actual search query
   sector: string;
+  note?: string; // curated desk note (optional — auto-read is always generated)
+  risk?: string; // curated invalidation (optional)
+}
+
+/* ---------- synthetic generator params ---------- */
+export interface EventShock {
+  week: number; // absolute week index
+  height: number; // amplitude in index points (can be negative)
+  width: number; // gaussian sigma in weeks
+}
+
+export interface TermDef extends TermMeta {
   seed: number;
   base: number; // starting index level
   drift: number; // index points per week (structural trend)
@@ -22,26 +30,26 @@ export interface TermDef {
   phase: number; // week-of-year of seasonal peak
   noise: number; // random-walk sigma
   shocks: EventShock[];
-  note: string; // desk note
-  risk: string; // what invalidates the signal
 }
 
 export interface TermData {
-  def: TermDef;
-  series: number[]; // 261 weekly points, 0..100
+  def: TermMeta;
+  series: number[]; // weekly points, 0..100
+  dates?: string[]; // ISO week-start labels (live data only)
   bandHi: number[]; // seasonal climatology + 1 sigma
   bandLo: number[]; // seasonal climatology - 1 sigma
   now: number;
   yoy: number; // % vs 52 weeks ago
   roc13: number; // % vs 13 weeks ago
-  pctl: number; // 5-year percentile 0..1
+  pctl: number; // percentile 0..1 within own history
   surprise: number; // z-score vs seasonal expectation
   score: number; // composite 0..1
   signal: Signal;
+  live: boolean;
 }
 
-export const WEEKS = 261; // 5 years + 1 week
-export const END_DATE = new Date(2026, 7, 9); // Sun 09 Aug 2026 (W32)
+export const WEEKS = 261; // synthetic horizon: 5 years + 1 week
+export const END_DATE = new Date(2026, 7, 9); // synthetic "now": Sun 09 Aug 2026
 
 /* ---------- deterministic PRNG ---------- */
 function mulberry32(seed: number) {
@@ -55,7 +63,7 @@ function mulberry32(seed: number) {
   };
 }
 
-/* ---------- series generation ---------- */
+/* ---------- synthetic series generation ---------- */
 function genSeries(d: TermDef): number[] {
   const rnd = mulberry32(d.seed);
   const out: number[] = [];
@@ -81,16 +89,17 @@ function genSeries(d: TermDef): number[] {
 
 /* ---------- seasonal climatology (week-of-year mean ± 1σ) ---------- */
 function climatology(series: number[]): { hi: number[]; lo: number[]; mean: number[]; sd: number[] } {
-  const hi: number[] = new Array(WEEKS).fill(0);
-  const lo: number[] = new Array(WEEKS).fill(0);
-  const mean: number[] = new Array(WEEKS).fill(0);
-  const sd: number[] = new Array(WEEKS).fill(1);
+  const n = series.length;
+  const hi: number[] = new Array(n).fill(0);
+  const lo: number[] = new Array(n).fill(0);
+  const mean: number[] = new Array(n).fill(0);
+  const sd: number[] = new Array(n).fill(1);
   for (let k = 0; k < 52; k++) {
     const vals: number[] = [];
-    for (let w = k; w < WEEKS; w += 52) vals.push(series[w]);
+    for (let w = k; w < n; w += 52) vals.push(series[w]);
     const m = vals.reduce((a, b) => a + b, 0) / vals.length;
     const s = Math.sqrt(vals.reduce((a, b) => a + (b - m) * (b - m), 0) / vals.length);
-    for (let w = k; w < WEEKS; w += 52) {
+    for (let w = k; w < n; w += 52) {
       mean[w] = m;
       sd[w] = Math.max(s, 1.2);
       hi[w] = Math.min(100, m + sd[w]);
@@ -102,14 +111,17 @@ function climatology(series: number[]): { hi: number[]; lo: number[]; mean: numb
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
-export function buildTerm(def: TermDef): TermData {
-  const series = genSeries(def);
+/* ---------- indicator engine (works on any series) ---------- */
+export function buildTermFromSeries(meta: TermMeta, series: number[], dates?: string[]): TermData {
+  const n = series.length;
   const clim = climatology(series);
-  const last = WEEKS - 1;
+  const last = n - 1;
+  const w52 = Math.max(last - 52, 0);
+  const w13 = Math.max(last - 13, 0);
   const now = series[last];
-  const yoy = ((now - series[last - 52]) / series[last - 52]) * 100;
-  const roc13 = ((now - series[last - 13]) / series[last - 13]) * 100;
-  const pctl = series.filter((v) => v <= now).length / WEEKS;
+  const yoy = ((now - series[w52]) / series[w52]) * 100;
+  const roc13 = ((now - series[w13]) / series[w13]) * 100;
+  const pctl = series.filter((v) => v <= now).length / n;
   const surprise = (now - clim.mean[last]) / clim.sd[last];
 
   const nYoy = clamp01((yoy + 25) / 50);
@@ -118,13 +130,31 @@ export function buildTerm(def: TermDef): TermData {
   const score = 0.3 * nYoy + 0.25 * nRoc + 0.25 * pctl + 0.2 * nSurp;
   const signal: Signal = score >= 0.62 ? 'BULL' : score <= 0.42 ? 'BEAR' : 'NEUT';
 
-  return { def, series, bandHi: clim.hi, bandLo: clim.lo, now, yoy, roc13, pctl, surprise, score, signal };
+  return {
+    def: meta,
+    series,
+    dates,
+    bandHi: clim.hi,
+    bandLo: clim.lo,
+    now,
+    yoy,
+    roc13,
+    pctl,
+    surprise,
+    score,
+    signal,
+    live: !!dates,
+  };
 }
 
-/* ---------- tracked universe (simulated) ---------- */
+export function buildTerm(def: TermDef): TermData {
+  return buildTermFromSeries(def, genSeries(def));
+}
+
+/* ---------- simulated fallback universe ---------- */
 const DEFS: TermDef[] = [
   {
-    id: 'roof', label: 'Roof Repair', query: '"roof repair near me"', sector: 'Home Services',
+    id: 'roof', label: 'Roof Repair', query: '"roof repair"', sector: 'Home Services',
     seed: 11, base: 30, drift: 0.05, amp: 13, phase: 17, noise: 1.6,
     shocks: [
       { week: 120, height: 16, width: 3 }, // 2023 storm season
@@ -142,8 +172,8 @@ const DEFS: TermDef[] = [
   },
   {
     id: 'battery', label: 'Home Batteries', query: '"home battery storage"', sector: 'Energy Storage',
-    seed: 37, base: 7, drift: 0.15, amp: 6, phase: 44, noise: 1.2,
-    shocks: [{ week: 235, height: 9, width: 5 }],
+    seed: 35, base: 7, drift: 0.19, amp: 6, phase: 44, noise: 1.2,
+    shocks: [{ week: 226, height: 7, width: 6 }],
     note: 'Low absolute level but compounding steadily off a small base. Percentile at cycle highs. The pattern resembles heat pumps three years ago — early-stage adoption S-curve.',
     risk: 'Small base amplifies percentage reads. Absolute search volume still niche; invalidate if drift stalls below prior highs.',
   },
@@ -205,31 +235,34 @@ const DEFS: TermDef[] = [
   },
 ];
 
-export const TERMS: TermData[] = DEFS.map(buildTerm);
+export const SIMULATED_TERMS: TermData[] = DEFS.map(buildTerm);
 
-/* ---------- formatting helpers ---------- */
-export function dateOf(weekIdx: number): Date {
+/* ---------- term-aware date helpers ---------- */
+function weekDate(term: TermData, weekIdx: number): Date {
+  if (term.dates && term.dates[weekIdx]) return new Date(term.dates[weekIdx]);
+  const n = term.series.length;
   const d = new Date(END_DATE);
-  d.setDate(d.getDate() - (WEEKS - 1 - weekIdx) * 7);
+  d.setDate(d.getDate() - (n - 1 - weekIdx) * 7);
   return d;
 }
 
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 
-export function fmtDate(weekIdx: number): string {
-  const d = dateOf(weekIdx);
+export function fmtDate(term: TermData, weekIdx: number): string {
+  const d = weekDate(term, weekIdx);
   return `${String(d.getDate()).padStart(2, '0')} ${MONTHS[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`;
 }
 
-export function fmtMonthYear(weekIdx: number): string {
-  const d = dateOf(weekIdx);
+export function fmtMonthYear(term: TermData, weekIdx: number): string {
+  const d = weekDate(term, weekIdx);
   return `${MONTHS[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`;
 }
 
-export function fmtYear(weekIdx: number): string {
-  return String(dateOf(weekIdx).getFullYear());
+export function fmtYear(term: TermData, weekIdx: number): string {
+  return String(weekDate(term, weekIdx).getFullYear());
 }
 
+/* ---------- formatting ---------- */
 export const fmtPct = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
 export const fmtIdx = (v: number) => v.toFixed(1);
 export const fmtScore = (v: number) => (v * 100).toFixed(0);
