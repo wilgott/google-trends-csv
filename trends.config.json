@@ -1,0 +1,24 @@
+{
+  "timeframe": "today 5-y",
+  "geo": "",
+  "hl": "en",
+  "_comment": "Groups are the Google Trends compare basis (max 5 keywords per group). Keep groups FIXED across runs so normalization stays comparable over time. All dashboard indicators are within-term (percentile, YoY, seasonal band), so group composition does not affect signal math. Group loosely by expected search volume so niche terms are not flattened against huge ones.",
+  "groups": [
+    ["mortgage refinance", "unemployment benefits", "weight loss injection", "pet insurance", "used furniture"],
+    ["roof repair", "heat pump", "solar panel cost", "home ev charger", "home battery storage"],
+    ["diy kitchen renovation"]
+  ],
+  "terms": [
+    { "id": "roof",     "label": "Roof Repair",           "query": "\"roof repair\"",             "sector": "Home Services",       "keyword": "roof repair" },
+    { "id": "heatpump", "label": "Heat Pumps",            "query": "\"heat pump\"",               "sector": "HVAC / Energy",       "keyword": "heat pump" },
+    { "id": "battery",  "label": "Home Batteries",        "query": "\"home battery storage\"",    "sector": "Energy Storage",      "keyword": "home battery storage" },
+    { "id": "usedfurn", "label": "Second-Hand Furniture", "query": "\"used furniture\"",          "sector": "Consumer / Recommerce","keyword": "used furniture" },
+    { "id": "unempl",   "label": "Unemployment Benefits", "query": "\"unemployment benefits\"",   "sector": "Macro / Labor",       "keyword": "unemployment benefits" },
+    { "id": "glp1",     "label": "Weight-Loss Drugs",     "query": "\"weight loss injection\"",   "sector": "Healthcare",          "keyword": "weight loss injection" },
+    { "id": "evcharg",  "label": "Home EV Charging",      "query": "\"home ev charger\"",         "sector": "Auto / Energy",       "keyword": "home ev charger" },
+    { "id": "petins",   "label": "Pet Insurance",         "query": "\"pet insurance\"",           "sector": "Insurance",           "keyword": "pet insurance" },
+    { "id": "solar",    "label": "Residential Solar",     "query": "\"solar panel cost\"",        "sector": "Energy",              "keyword": "solar panel cost" },
+    { "id": "refi",     "label": "Mortgage Refinance",    "query": "\"mortgage refinance\"",      "sector": "Financials / Housing","keyword": "mortgage refinance" },
+    { "id": "diy",      "label": "DIY Renovation",        "query": "\"diy kitchen renovation\"",  "sector": "Retail / Home Imp.",  "keyword": "diy kitchen renovation" }
+  ]
+}
