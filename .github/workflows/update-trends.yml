@@ -44,3 +44,12 @@ jobs:
             git commit -m "data: weekly trends refresh ($(date -u +%Y-%m-%d))"
             git push
           fi
+
+ # On failure, save screenshots + HTML of whatever Chrome saw.
+      - name: Upload debug artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trends-debug
+          path: trends-out/
+          retention-days: 7
