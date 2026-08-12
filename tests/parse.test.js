@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { parseTrendsCsv, summarizeTrends, splitCsvLine } from '../src/parse.js';
+import { parseTrendsCsv, summarizeTrends, splitCsvLine, decodeTrendsCsv } from '../src/parse.js';
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
 
@@ -40,6 +40,29 @@ test('parses new export format with query description row before header', () => 
   assert.equal(weeks.length, 3);
   assert.equal(weeks[0], '2021-08-08 - 2021-08-14');
   assert.deepEqual(series['diy kitchen renovation'], [55, 52, 0]);
+});
+
+test('parses UTF-16LE encoded exports with BOM', () => {
+  const text = readFileSync(join(fixtures, 'sample.csv'), 'utf8');
+  const buf = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]);
+  const { header, weeks, series } = parseTrendsCsv(decodeTrendsCsv(buf));
+
+  assert.deepEqual(header, ['link shortener', 'url shortener', 'qr code generator']);
+  assert.equal(weeks.length, 6);
+  assert.equal(series['link shortener'][0], 42);
+});
+
+test('parses exports with UTF-8 BOM', () => {
+  const text = readFileSync(join(fixtures, 'sample.csv'), 'utf8');
+  const buf = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(text, 'utf8')]);
+  const { weeks } = parseTrendsCsv(decodeTrendsCsv(buf));
+  assert.equal(weeks.length, 6);
+});
+
+test('parses exports with CR-only line endings', () => {
+  const text = readFileSync(join(fixtures, 'sample.csv'), 'utf8').replace(/\n/g, '\r');
+  const { weeks } = parseTrendsCsv(text);
+  assert.equal(weeks.length, 6);
 });
 
 test('splitCsvLine handles escaped quotes', () => {
