@@ -14,7 +14,7 @@ const CONSENT_PATTERNS = [
   'Zustimmen',
   'Tout accepter', // fr
   'Aceptar todo', // es
-  'Accetta todo', // it
+  'Accetta tutto', // it
   'Godta alle', // no
   'Acceptera alla', // sv
   'Zaakceptuj wszystko', // pl
@@ -65,6 +65,46 @@ async function dismissConsent(page) {
 async function detectPartialData(page) {
   const text = await page.evaluate(() => document.body.innerText).catch(() => '');
   return NO_DATA_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+/**
+ * Inspect the rendered DOM and report what is actually on the page:
+ * which widgets rendered, which buttons exist, and any error notices.
+ * Printed to the run log so failures are diagnosable without artifacts.
+ */
+async function pageAutopsy(page) {
+  try {
+    return await page.evaluate(() => {
+      const widgetNames = [...document.querySelectorAll('widget-template')]
+        .map((w) => w.getAttribute('widget-name'))
+        .filter(Boolean);
+      const allButtons = [...document.querySelectorAll('button')];
+      const matched = allButtons
+        .map((b) => ({
+          aria: b.getAttribute('aria-label') || '',
+          cls: String(b.className || '').slice(0, 60),
+          text: (b.innerText || '').trim().slice(0, 30),
+        }))
+        .filter((b) => /csv|download|export|share|save/i.test(b.aria + b.cls + b.text))
+        .slice(0, 12);
+      const bodyText = document.body ? document.body.innerText : '';
+      const flags = [];
+      if (/something went wrong/i.test(bodyText)) flags.push('something-went-wrong');
+      if (/unusual traffic|captcha/i.test(bodyText)) flags.push('captcha-text');
+      if (/no results|not enough/i.test(bodyText)) flags.push('no-data-text');
+      if (/429/.test(document.title)) flags.push('429-title');
+      return {
+        widgetNames,
+        totalButtons: allButtons.length,
+        matched,
+        flags,
+        iframes: document.querySelectorAll('iframe').length,
+        bodyHead: bodyText.replace(/\s+/g, ' ').trim().slice(0, 300),
+      };
+    });
+  } catch (e) {
+    return { autopsyError: String(e) };
+  }
 }
 
 /**
@@ -198,6 +238,11 @@ export async function exportTrends({
 
       if (!buttonCount) {
         entry.error = await describeBlockPage(page, join(out, `debug-${groupSlug(group)}`));
+        const a = await pageAutopsy(page);
+        onProgress(
+          `Autopsy: widgets=${JSON.stringify(a.widgetNames)} totalButtons=${a.totalButtons} ` +
+            `matched=${JSON.stringify(a.matched)} flags=${JSON.stringify(a.flags)} iframes=${a.iframes} body="${a.bodyHead}"`
+        );
       } else {
         // The explore page hosts several exportable widgets (timeline, regions,
         // related queries — the latter export percentages). Try export buttons
@@ -233,8 +278,10 @@ export async function exportTrends({
             entry.error = `CSV export was not the interest-over-time series: ${e.message}`;
           }
         }
-        if (!entry.csvPath && !entry.error) {
-          entry.error = 'No usable CSV export found on the page.';
+        if (!entry.csvPath) {
+          const a = await pageAutopsy(page);
+          onProgress(`Autopsy (no usable export): matched=${JSON.stringify(a.matched)} flags=${JSON.stringify(a.flags)}`);
+          if (!entry.error) entry.error = 'No usable CSV export found on the page.';
         }
       }
 

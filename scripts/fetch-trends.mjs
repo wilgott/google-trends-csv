@@ -28,6 +28,7 @@ const { summary } = await exportTrends({
   headless: false, // headed Chrome under xvfb is the reliable path
   profileDir: process.env.TRENDS_PROFILE || './.trends-profile',
   outDir,
+  onProgress: (msg) => console.log(`  › ${msg}`),
 });
 
 writeFileSync(join(outDir, 'summary.json'), JSON.stringify(summary, null, 2));
