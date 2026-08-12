@@ -37,7 +37,8 @@ const CSV_BUTTON_SELECTOR = [
 
 const MAX_429_RETRIES = 3;
 const GROUP_DELAY_MS = 4000; // polite pacing between groups
-const MAX_BUTTON_ATTEMPTS = 5; // export buttons to try, in DOM order
+const MAX_BUTTON_ATTEMPTS = 4; // export buttons to try per page load, in DOM order
+const MAX_PAGE_LOADS = 2; // page loads per keyword (widget failures are transient)
 
 /**
  * Dismiss Google's cookie-consent interstitial if it is showing.
@@ -60,10 +61,16 @@ async function dismissConsent(page) {
 }
 
 /**
- * True when the page reports that some/all terms have too little volume.
+ * True when the timeline widget reports too little volume. Scoped to the
+ * widget area — page chrome contains similar phrases and false-positives.
  */
 async function detectPartialData(page) {
-  const text = await page.evaluate(() => document.body.innerText).catch(() => '');
+  const text = await page
+    .evaluate(() => {
+      const w = document.querySelector('widget-template');
+      return w ? w.innerText : '';
+    })
+    .catch(() => '');
   return NO_DATA_PATTERNS.some((pattern) => pattern.test(text));
 }
 
@@ -197,57 +204,58 @@ export async function exportTrends({
       const url = buildExploreUrl({ keywords: group, timeframe, geo, hl });
       onProgress(`Loading: ${group.join(', ')}`);
 
-      // Navigate with 429 backoff — a 429 page means Google is throttling this
-      // IP/session, so wait progressively longer and retry before giving up.
-      for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt++) {
-        const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-        await page.waitForTimeout(5000);
-        const status = response ? response.status() : 0;
-        const title = await page.title().catch(() => '');
-        const throttled = status === 429 || /429/.test(title);
-        if (!throttled) break;
-        if (attempt < MAX_429_RETRIES) {
-          const waitMs = 20000 * (attempt + 1) + 10000;
-          onProgress(`429 rate-limited — waiting ${Math.round(waitMs / 1000)}s before retry ${attempt + 1}/${MAX_429_RETRIES}`);
-          await page.waitForTimeout(waitMs);
+      const entry = { keywords: group, csvPath: null, partial: false, stats: null, error: null };
+
+      for (let loadAttempt = 0; loadAttempt < MAX_PAGE_LOADS && !entry.csvPath; loadAttempt++) {
+        if (loadAttempt === 0) {
+          // Navigate with 429 backoff — a 429 page means Google is throttling
+          // this IP/session, so wait progressively longer before giving up.
+          for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt++) {
+            const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+            await page.waitForTimeout(5000);
+            const status = response ? response.status() : 0;
+            const title = await page.title().catch(() => '');
+            const throttled = status === 429 || /429/.test(title);
+            if (!throttled) break;
+            if (attempt < MAX_429_RETRIES) {
+              const waitMs = 20000 * (attempt + 1) + 10000;
+              onProgress(`429 rate-limited — waiting ${Math.round(waitMs / 1000)}s before retry ${attempt + 1}/${MAX_429_RETRIES}`);
+              await page.waitForTimeout(waitMs);
+            }
+          }
+        } else {
+          // Widgets fail to render transiently from flagged IPs — a plain
+          // reload often brings the timeline widget back.
+          onProgress(`No timeline export on first render — reloading page (attempt ${loadAttempt + 1}/${MAX_PAGE_LOADS})`);
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
+          await page.waitForTimeout(6000);
         }
-      }
 
-      // Widgets render lazily — give the page a chance to settle on slow networks.
-      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+        // Widgets render lazily — give the page a chance to settle.
+        await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
 
-      // Cookie consent appears once per profile; retry a couple of times since
-      // it can render late. Afterwards the profile remembers the choice.
-      if (!consentHandled) {
-        for (let attempt = 0; attempt < 3 && !consentHandled; attempt++) {
-          consentHandled = await dismissConsent(page);
-          if (!consentHandled) await page.waitForTimeout(2000);
+        // Cookie consent appears once per profile; afterwards it is remembered.
+        if (!consentHandled) {
+          for (let attempt = 0; attempt < 3 && !consentHandled; attempt++) {
+            consentHandled = await dismissConsent(page);
+            if (!consentHandled) await page.waitForTimeout(2000);
+          }
+          consentHandled = true;
         }
-        consentHandled = true; // don't re-check on every group
-      }
 
-      const partial = await detectPartialData(page);
-      if (partial) {
-        onProgress(`Note: "not enough data" notice for group: ${group.join(', ')}`);
-      }
+        if (!entry.partial && (await detectPartialData(page))) {
+          entry.partial = true;
+          onProgress(`Note: "not enough data" notice for: ${group.join(', ')}`);
+        }
 
-      const buttons = page.locator(CSV_BUTTON_SELECTOR);
-      await buttons.first().waitFor({ state: 'visible', timeout: 20000 }).catch(() => {});
-      const buttonCount = await buttons.count();
-      const entry = { keywords: group, csvPath: null, partial, stats: null, error: null };
+        const buttons = page.locator(CSV_BUTTON_SELECTOR);
+        await buttons.first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+        const buttonCount = await buttons.count();
+        if (!buttonCount) continue; // widgets missing — reload and try again
 
-      if (!buttonCount) {
-        entry.error = await describeBlockPage(page, join(out, `debug-${groupSlug(group)}`));
-        const a = await pageAutopsy(page);
-        onProgress(
-          `Autopsy: widgets=${JSON.stringify(a.widgetNames)} totalButtons=${a.totalButtons} ` +
-            `matched=${JSON.stringify(a.matched)} flags=${JSON.stringify(a.flags)} iframes=${a.iframes} body="${a.bodyHead}"`
-        );
-      } else {
         // The explore page hosts several exportable widgets (timeline, regions,
-        // related queries — the latter export percentages). Try export buttons
-        // in DOM order and keep the first download that parses as a dated
-        // weekly time series.
+        // related queries — those export non-timeline formats). Try buttons in
+        // DOM order and keep the first download that parses as a dated series.
         for (let bi = 0; bi < Math.min(buttonCount, MAX_BUTTON_ATTEMPTS) && !entry.csvPath; bi++) {
           const [download] = await Promise.all([
             page.waitForEvent('download', { timeout: downloadTimeout }).catch(() => null),
@@ -280,11 +288,18 @@ export async function exportTrends({
             entry.error = `CSV export was not the interest-over-time series: ${e.message}`;
           }
         }
-        if (!entry.csvPath) {
-          const a = await pageAutopsy(page);
-          onProgress(`Autopsy (no usable export): matched=${JSON.stringify(a.matched)} flags=${JSON.stringify(a.flags)}`);
-          if (!entry.error) entry.error = 'No usable CSV export found on the page.';
+      }
+
+      if (!entry.csvPath) {
+        const a = await pageAutopsy(page);
+        if (a.widgetNames && a.widgetNames.length === 0 && !entry.error) {
+          entry.error = await describeBlockPage(page, join(out, `debug-${groupSlug(group)}`));
         }
+        onProgress(
+          `Autopsy: widgets=${JSON.stringify(a.widgetNames)} totalButtons=${a.totalButtons} ` +
+            `matched=${JSON.stringify(a.matched)} flags=${JSON.stringify(a.flags)} iframes=${a.iframes}`
+        );
+        if (!entry.error) entry.error = 'No usable CSV export found on the page.';
       }
 
       summary.groups.push(entry);
