@@ -30,8 +30,13 @@ const NO_DATA_PATTERNS = [
 const CSV_BUTTON_SELECTOR = [
   'widget-template[widget-name="fe_line_chart"] button[aria-label*="CSV" i]',
   'widget-template[widget-name="fe_line_chart"] button[title*="CSV" i]',
+  'widget-template[widget-name="fe_line_chart"] button.export',
   'button[aria-label*="CSV" i]',
+  'button.export', // first export button on the page = interest-over-time widget
 ].join(', ');
+
+const MAX_429_RETRIES = 3;
+const GROUP_DELAY_MS = 4000; // polite pacing between groups
 
 /**
  * Dismiss Google's cookie-consent interstitial if it is showing.
@@ -77,6 +82,7 @@ async function describeBlockPage(page, debugBase) {
   let cause = 'page layout changed';
   if (url.includes('consent.google')) cause = 'cookie-consent wall not dismissed';
   else if (url.includes('/sorry/')) cause = 'Google rate-limit/captcha page (datacenter IP blocked)';
+  else if (/429/.test(title)) cause = 'Google 429 rate-limit page';
   else if (/before you continue/i.test(title)) cause = 'cookie-consent wall not dismissed';
   return `CSV download button not found — ${cause} (url: ${url}, title: "${title}"). Debug saved to ${debugBase}.{png,html}`;
 }
@@ -121,6 +127,7 @@ export async function exportTrends({
     channel: 'chrome',
     acceptDownloads: true,
     viewport: { width: 1400, height: 900 },
+    args: ['--disable-blink-features=AutomationControlled'],
   });
 
   const summary = {
@@ -136,11 +143,36 @@ export async function exportTrends({
     const page = context.pages()[0] || (await context.newPage());
     let consentHandled = false;
 
+    // Warm the session on a neutral Google page before hitting Trends.
+    onProgress('Warming up session');
+    await page.goto('https://www.google.com', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    await page.waitForTimeout(2500);
+
+    let groupIndex = -1;
     for (const group of groups) {
+      groupIndex++;
+      if (groupIndex > 0) await page.waitForTimeout(GROUP_DELAY_MS);
+
       const url = buildExploreUrl({ keywords: group, timeframe, geo, hl });
       onProgress(`Loading: ${group.join(', ')}`);
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(5000);
+
+      // Navigate with 429 backoff — a 429 page means Google is throttling this
+      // IP/session, so wait progressively longer and retry before giving up.
+      let throttled = false;
+      for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt++) {
+        const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.waitForTimeout(5000);
+        const status = response ? response.status() : 0;
+        const title = await page.title().catch(() => '');
+        throttled = status === 429 || /429/.test(title);
+        if (!throttled) break;
+        if (attempt < MAX_429_RETRIES) {
+          const waitMs = 20000 * (attempt + 1) + 10000;
+          onProgress(`429 rate-limited — waiting ${Math.round(waitMs / 1000)}s before retry ${attempt + 1}/${MAX_429_RETRIES}`);
+          await page.waitForTimeout(waitMs);
+        }
+      }
+
       // Widgets render lazily — give the page a chance to settle on slow networks.
       await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
 

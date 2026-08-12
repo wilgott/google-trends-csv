@@ -1,6 +1,6 @@
 {
   "name": "google-trends-csv",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Google Trends CSV extractor that works when API wrappers get blocked. Drives a real Chrome session on trends.google.com and uses the site's own CSV export.",
   "type": "module",
   "main": "src/index.js",
